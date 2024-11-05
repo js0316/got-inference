@@ -1,2 +1,0 @@
-GOT
-zero_config
