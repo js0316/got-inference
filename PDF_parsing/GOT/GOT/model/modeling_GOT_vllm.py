@@ -225,7 +225,6 @@ class Qwen2GOTModel(Qwen2Model):
         )
 
     def merge_embeddings(self, input_ids, inputs_embeds, images):
-
         im_patch_token = 151859
         im_start_token = 151857
         im_end_token = 151858
@@ -241,25 +240,24 @@ class Qwen2GOTModel(Qwen2Model):
                     
                 image_feature = self.mm_projector_vary(cnn_feature)
                 image_features.append(image_feature)
+        
         dummy_image_features = torch.zeros(256, 1024, device=inputs_embeds.device, dtype=inputs_embeds.dtype)
         use_im_start_end = True
         new_input_embeds = []
+        segment_lengths = []
         
-        # 修改By YiJiang
-        if  inputs_embeds.dim() == 2:
+        # 修改处理batch维度的逻辑
+        if inputs_embeds.dim() == 2:
             batch_size = len(image_features)
-            input_ids = input_ids.view(batch_size,-1)
-            NB , D = inputs_embeds.shape
-            inputs_embeds = inputs_embeds.view(batch_size, NB//batch_size, D)
-            print('batch_size', batch_size)
-            print('input_ids', input_ids.shape)
-            print('inputs_embeds', inputs_embeds.shape)
-            print('image_features', image_features[0].shape)
+            input_ids = input_ids.view(batch_size, -1)  # 重塑input_ids为[batch_size, seq_len]
+            NB, D = inputs_embeds.shape
+            inputs_embeds = inputs_embeds.view(batch_size, NB//batch_size, D)  # 重塑为[batch_size, seq_len, hidden_dim]
         
         for cur_input_ids, cur_input_embeds, cur_image_features in zip(input_ids, inputs_embeds, image_features):
             if (cur_input_ids == im_patch_token).sum() == 0:
                 cur_input_embeds = cur_input_embeds + (0. * dummy_image_features).sum()
                 new_input_embeds.append(cur_input_embeds)
+                segment_lengths.append(len(cur_input_embeds))
                 continue
 
             if use_im_start_end:
@@ -284,18 +282,29 @@ class Qwen2GOTModel(Qwen2Model):
                     )
 
                 new_input_embeds.append(cur_input_embeds)
+                segment_lengths.append(len(cur_input_embeds))
             else:
                 raise NotImplementedError
         
-        inputs_embeds = torch.stack(new_input_embeds, dim=0)
-
-        # 修改 By YiJiang
-        if inputs_embeds.dim() == 3:
-            B, N, D = inputs_embeds.shape
-            inputs_embeds = inputs_embeds.permute(1, 0, 2).reshape(N * B, D)
-            print('inputs_embeds -------',inputs_embeds.shape)
-
-        return inputs_embeds
+        # 使用pad_sequence确保每个样本独立且长度一致
+        max_length = max(segment_lengths)
+        padded_embeds = []
+        
+        for embed, length in zip(new_input_embeds, segment_lengths):
+            # 如果需要，对每个样本进行padding
+            if length < max_length:
+                padding = torch.zeros(max_length - length, embed.size(-1), 
+                                    device=embed.device, dtype=embed.dtype)
+                padded_embed = torch.cat([embed, padding], dim=0)
+            else:
+                padded_embed = embed
+            padded_embeds.append(padded_embed)
+        
+        # 将所有batch的样本连接成一个大的2D张量
+        inputs_embeds = torch.cat(padded_embeds, dim=0)  # [(batch_size * max_length), hidden_dim]
+        
+        # 返回展平的embeds和每个样本的长度信息
+        return inputs_embeds, segment_lengths
 
         
     def forward(
@@ -308,20 +317,20 @@ class Qwen2GOTModel(Qwen2Model):
         **kwargs: object,
     ) -> Tensor:
         images = kwargs.pop("images", None)
-        print(input_ids.shape)
-        if images is not None:
-            print(images.shape)
         
         inputs_embeds = self.embed_tokens(input_ids).cuda()
-        if inputs_embeds is not None:
-            print('inputs_embeds.shape:', inputs_embeds.shape)
 
         vision_tower_high = getattr(self, 'vision_tower_high', None)
         if vision_tower_high is not None and images is not None:
-            inputs_embeds = self.merge_embeddings(input_ids, inputs_embeds, images)
-
+            inputs_embeds, segment_lengths = self.merge_embeddings(input_ids, inputs_embeds, images)
+            # 更新attention_metadata以反映新的序列长度
+            attn_metadata = self._update_attention_metadata(attn_metadata, segment_lengths)
         
-        # print('sss:', inputs_embeds.shape)
+        # 确保hidden_states是2D的
+        if inputs_embeds.dim() > 2:
+            batch_size, seq_len, hidden_size = inputs_embeds.shape
+            inputs_embeds = inputs_embeds.reshape(-1, hidden_size)
+        
         hidden_states = inputs_embeds
         residual = None
         for i in range(len(self.layers)):
@@ -334,8 +343,19 @@ class Qwen2GOTModel(Qwen2Model):
                 residual,
             )
         hidden_states, _ = self.norm(hidden_states, residual)
-        # print('hhh:', hidden_states.shape)
+        
         return hidden_states
+
+    def _update_attention_metadata(self, attn_metadata: AttentionMetadata, segment_lengths: List[int]) -> AttentionMetadata:
+        """更新attention_metadata以处理不同长度的序列"""
+        # 更新attention_metadata中的相关属性
+        # 需要根据vLLM的具体实现来调整
+        # 例如更新seq_lens, prompt_lens等
+        
+        # 这里需要确保attention mask能正确处理padding部分
+        # 并且每个样本的attention不会跨越到其他样本
+        
+        return attn_metadata
 
 
 # 定义最大图像 tokens 获取函数

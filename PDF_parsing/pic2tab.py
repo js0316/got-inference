@@ -178,9 +178,12 @@ def vllm_got(image_list, type='format'):
             sampling_params = sampling_param
         )
         generated_text = ""
-        for o in output_ids:
-            print('-'*100,'\n\n')
-            generated_text += o.outputs[0].text
+        for idx, o in enumerate(output_ids):
+            # 获取图片名称（从路径中提取文件名）
+            image_name = os.path.basename(image_list[idx])
+            generated_text += f"\n图片名称: {image_name}\n"
+            generated_text += f"识别结果:\n{o.outputs[0].text}\n"
+            generated_text += "-" * 50 + "\n"
 
     return generated_text
 
@@ -190,10 +193,11 @@ if __name__ == '__main__':
     import time
     start = time.time()
     image_list = [
-        '你的目录/project/pdf/output/images/0cb040acbb49b0992f5bd3591c98e83c199d74815b8759ca88e5bcb70b5846e4.jpg',
+       '/home/lucky/GOT-OCR2.0/GOT-OCR-2.0-master/image/微信图片_20241105212824.png',
+       '/home/lucky/GOT-OCR2.0/GOT-OCR-2.0-master/image/屏幕截图 2024-09-22 205553.png'
         # 'xxxxxx.jpg'
     ]          
-    res = vllm_got(image_list)
+    res = vllm_got(image_list, type = "ocr")
     print(res)
     end = time.time()
     print(f"Time cost: {end-start:.3f} seconds")
